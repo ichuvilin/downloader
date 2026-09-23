@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sync"
 )
 
 func downloadFile(url, savePath string) error {
@@ -49,10 +50,18 @@ func main() {
 
 	savePath := os.Args[1]
 	urls := os.Args[2:]
+
+	var wg sync.WaitGroup
+
 	fmt.Printf("Директория для скачивания: %s\n", savePath)
 	for _, u := range urls {
-		if err := downloadFile(u, savePath); err != nil {
-			fmt.Errorf("error during download %s, %w", u, err)
-		}
+		wg.Add(1)
+		go func(u string) {
+			defer wg.Done()
+			if err := downloadFile(u, savePath); err != nil {
+				fmt.Println(fmt.Errorf("error during download %s, %w", u, err))
+			}
+		}(u)
 	}
+	wg.Wait()
 }
