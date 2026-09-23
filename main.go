@@ -7,7 +7,9 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"sync"
+	"time"
 )
 
 func downloadFile(url, savePath string) error {
@@ -15,9 +17,25 @@ func downloadFile(url, savePath string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Скачивание: %s\n", url)
+	client := &http.Client{Timeout: 30 * time.Second}
 
-	resp, err := http.Get(url)
+	resp, err := client.Head(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	contentLength := resp.Header.Get("Content-Length")
+	size, _ := strconv.ParseInt(contentLength, 10, 64)
+
+	// Поддержка докачки
+	acceptRanges := resp.Header.Get("Accept-Ranges")
+	supportsResume := acceptRanges == "bytes"
+
+	fmt.Printf("Размер:  %s\n", size)
+	fmt.Printf("Докачка: %s\n", supportsResume)
+
+	resp, err = http.Get(url)
 	if err != nil {
 		return err
 	}
