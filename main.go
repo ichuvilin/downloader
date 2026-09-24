@@ -11,6 +11,9 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/vbauerster/mpb/v8"
+	"github.com/vbauerster/mpb/v8/decor"
 )
 
 const (
@@ -30,12 +33,14 @@ type DownloadState struct {
 	DownloadedChunks []bool `json:"downloaded_chunks"`
 }
 
-func downloadFile(url, savePath string) error {
-	err := os.MkdirAll(savePath, 0755)
-	if err != nil {
+func downloadFile(url, savePath string, p *mpb.Progress) error {
+	if err := os.MkdirAll(savePath, 0755); err != nil {
 		return err
 	}
-	client := &http.Client{Timeout: 30 * time.Second}
+
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
 
 	fileName := filepath.Join(savePath, path.Base(url))
 
@@ -46,19 +51,30 @@ func downloadFile(url, savePath string) error {
 	defer resp.Body.Close()
 
 	contentLength := resp.Header.Get("Content-Length")
-	size, _ := strconv.ParseInt(contentLength, 10, 64)
 
-	// Поддержка докачки
+	size, err := strconv.ParseInt(contentLength, 10, 64)
+	if err != nil {
+		return err
+	}
+
 	acceptRanges := resp.Header.Get("Accept-Ranges")
 	supportsResume := acceptRanges == "bytes"
+
 	totalChunks := (size + chunkSize - 1) / chunkSize
 
 	var state *DownloadState
 
-	if _, err = os.Stat(fmt.Sprintf("%s.progress", fileName)); err == nil {
-		data, _ := os.ReadFile(fmt.Sprintf("%s.progress", fileName))
-		err := json.Unmarshal(data, &state)
+	progressFile := fmt.Sprintf("%s.progress", fileName)
+
+	if _, err = os.Stat(progressFile); err == nil {
+		data, err := os.ReadFile(progressFile)
 		if err != nil {
+			return err
+		}
+
+		state = &DownloadState{}
+
+		if err := json.Unmarshal(data, state); err != nil {
 			return err
 		}
 	} else if os.IsNotExist(err) {
@@ -73,37 +89,65 @@ func downloadFile(url, savePath string) error {
 		return err
 	}
 
-	fmt.Printf("Размер:  %d\n", size)
+	// Считаем уже загруженные байты.
+	var downloadedBytes int64
+
+	for i, downloaded := range state.DownloadedChunks {
+		if !downloaded {
+			continue
+		}
+
+		start := int64(i) * int64(state.ChunkSize)
+		end := start + int64(state.ChunkSize)
+
+		if end > state.TotalSize {
+			end = state.TotalSize
+		}
+
+		downloadedBytes += end - start
+	}
+
+	// Создаём progress bar.
+	bar := p.AddBar(
+		size,
+		mpb.PrependDecorators(
+			decor.Name(path.Base(fileName)),
+		),
+		mpb.AppendDecorators(
+			decor.Percentage(),
+			decor.CountersKibiByte("% .2f / % .2f"),
+		),
+	)
+
+	// Восстанавливаем прогресс.
+	if downloadedBytes > 0 {
+		bar.SetCurrent(downloadedBytes)
+	}
+
+	fmt.Printf("Размер: %d\n", size)
 	fmt.Printf("Докачка: %t\n", supportsResume)
 
-	resp, err = http.Get(url)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("серер вернул %d", resp.StatusCode)
-	}
-
-	file, err := os.Create(fileName)
+	file, err := os.OpenFile(
+		fileName,
+		os.O_CREATE|os.O_WRONLY,
+		0644,
+	)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 
-	err = file.Truncate(size)
-	if err != nil {
+	if err := file.Truncate(size); err != nil {
 		return err
 	}
 
-	if err = SaveState(fileName, state); err != nil {
+	if err := SaveState(fileName, state); err != nil {
 		return err
 	}
 
 	jobs := make(chan int64)
-	var wg sync.WaitGroup
 
+	var wg sync.WaitGroup
 	var fileMu sync.Mutex
 	var stateMu sync.Mutex
 
@@ -114,14 +158,22 @@ func downloadFile(url, savePath string) error {
 			defer wg.Done()
 
 			for chunkID := range jobs {
-				start := chunkID * chunkID
-				end := start + chunkSize + 1
+				start := chunkID * chunkSize
+				end := start + chunkSize - 1
+
 				if end >= size {
 					end = size - 1
 				}
 
 				for attempt := 0; attempt < maxRetries; attempt++ {
-					err := downloadChunk(url, start, end, client, file, &fileMu)
+					err := downloadChunk(
+						url,
+						start,
+						end,
+						client,
+						file,
+						&fileMu,
+					)
 
 					if err == nil {
 						stateMu.Lock()
@@ -139,6 +191,9 @@ func downloadFile(url, savePath string) error {
 								err,
 							)
 						}
+
+						// Обновляем progress bar.
+						bar.IncrBy(int(end - start + 1))
 
 						break
 					}
@@ -167,13 +222,11 @@ func downloadFile(url, savePath string) error {
 		stateMu.Lock()
 		downloaded := state.DownloadedChunks[i]
 		stateMu.Unlock()
+
 		if downloaded {
-			fmt.Printf(
-				"Чанк %d уже загружен, пропускаем\n",
-				i+1,
-			)
 			continue
 		}
+
 		jobs <- i
 	}
 
@@ -181,7 +234,6 @@ func downloadFile(url, savePath string) error {
 
 	wg.Wait()
 
-	fmt.Printf("Файл сохранён: %s\n", fileName)
 	return nil
 }
 
@@ -246,6 +298,8 @@ func main() {
 	savePath := os.Args[1]
 	urls := os.Args[2:]
 
+	p := mpb.New()
+
 	var wg sync.WaitGroup
 
 	fmt.Printf("Директория для скачивания: %s\n", savePath)
@@ -253,10 +307,11 @@ func main() {
 		wg.Add(1)
 		go func(u string) {
 			defer wg.Done()
-			if err := downloadFile(u, savePath); err != nil {
+			if err := downloadFile(u, savePath, p); err != nil {
 				fmt.Println(fmt.Errorf("error during download %s, %w", u, err))
 			}
 		}(u)
 	}
 	wg.Wait()
+	p.Wait()
 }
