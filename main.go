@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path"
@@ -78,12 +79,18 @@ func downloadFile(url, savePath string) error {
 			return fmt.Errorf("сервер вернул: %d", resp.StatusCode)
 		}
 		defer resp.Body.Close()
+
+		_, err = file.Seek(start, io.SeekStart)
+		if err != nil {
+			return err
+		}
+
+		_, err = io.Copy(file, resp.Body)
+		if err != nil {
+			return err
+		}
 	}
 
-	//_, err = io.Copy(file, resp.Body)
-	//if err != nil {
-	//	return err
-	//}
 	fmt.Printf("Файл сохранён: %s\n", fileName)
 	return nil
 }
