@@ -30,6 +30,8 @@ func downloadFile(url, savePath string) error {
 	}
 	client := &http.Client{Timeout: 30 * time.Second}
 
+	fileName := filepath.Join(savePath, path.Base(url))
+
 	resp, err := client.Head(url)
 	if err != nil {
 		return err
@@ -42,6 +44,27 @@ func downloadFile(url, savePath string) error {
 	// Поддержка докачки
 	acceptRanges := resp.Header.Get("Accept-Ranges")
 	supportsResume := acceptRanges == "bytes"
+	totalChunks := (size + chunkSize - 1) / chunkSize
+
+	var state *DownloadState
+
+	if _, err = os.Stat(fmt.Sprintf("%s.progress", fileName)); err == nil {
+		data, _ := os.ReadFile(fmt.Sprintf("%s.progress", fileName))
+		err := json.Unmarshal(data, &state)
+		if err != nil {
+			return err
+		}
+	} else if os.IsNotExist(err) {
+		state = &DownloadState{
+			URL:              url,
+			TotalSize:        size,
+			ChunkSize:        chunkSize,
+			TotalChunks:      int(totalChunks),
+			DownloadedChunks: make([]bool, int(totalChunks)),
+		}
+	} else {
+		return err
+	}
 
 	fmt.Printf("Размер:  %d\n", size)
 	fmt.Printf("Докачка: %t\n", supportsResume)
@@ -56,8 +79,6 @@ func downloadFile(url, savePath string) error {
 		return fmt.Errorf("серер вернул %d", resp.StatusCode)
 	}
 
-	totalChunks := (size + chunkSize - 1) / chunkSize
-	fileName := filepath.Join(savePath, path.Base(url))
 	file, err := os.Create(fileName)
 	if err != nil {
 		return err
@@ -69,18 +90,15 @@ func downloadFile(url, savePath string) error {
 		return err
 	}
 
-	state := DownloadState{
-		URL:              url,
-		TotalSize:        size,
-		ChunkSize:        chunkSize,
-		TotalChunks:      int(totalChunks),
-		DownloadedChunks: make([]bool, int(totalChunks)),
-	}
 	if err = SaveState(fileName, state); err != nil {
 		return err
 	}
 
 	for i := int64(0); i < totalChunks; i++ {
+		if state.DownloadedChunks[i] {
+			fmt.Printf("Чанк %d уже загружен, пропускаем\n", i+1)
+			continue
+		}
 		start := i * chunkSize
 		end := start + chunkSize - 1
 
@@ -119,7 +137,7 @@ func downloadFile(url, savePath string) error {
 	return nil
 }
 
-func SaveState(filename string, state DownloadState) error {
+func SaveState(filename string, state *DownloadState) error {
 	data, err := json.MarshalIndent(state, "", " ")
 	if err != nil {
 		return err
