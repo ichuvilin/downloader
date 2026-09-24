@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,13 @@ import (
 )
 
 const chunkSize = 10 * 1024 * 1024
+
+type DownloadState struct {
+	URL         string `json:"url"`
+	TotalSize   int64  `json:"total_size"`
+	ChunkSize   int    `json:"chunk_size"`
+	TotalChunks int    `json:"total_chunks"`
+}
 
 func downloadFile(url, savePath string) error {
 	err := os.MkdirAll(savePath, 0755)
@@ -57,6 +65,20 @@ func downloadFile(url, savePath string) error {
 
 	err = file.Truncate(size)
 	if err != nil {
+		return err
+	}
+
+	state := DownloadState{
+		URL:         url,
+		TotalSize:   size,
+		ChunkSize:   chunkSize,
+		TotalChunks: int(totalChunks),
+	}
+	data, err := json.MarshalIndent(state, "", " ")
+	if err != nil {
+		return err
+	}
+	if err = os.WriteFile(fmt.Sprintf("%s.progress", fileName), data, 0644); err != nil {
 		return err
 	}
 
