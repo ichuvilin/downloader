@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path"
@@ -12,8 +11,10 @@ import (
 	"time"
 )
 
+const chunkSize = 10 * 1024 * 1024
+
 func downloadFile(url, savePath string) error {
-	err := os.MkdirAll(savePath, 0644)
+	err := os.MkdirAll(savePath, 0755)
 	if err != nil {
 		return err
 	}
@@ -32,8 +33,8 @@ func downloadFile(url, savePath string) error {
 	acceptRanges := resp.Header.Get("Accept-Ranges")
 	supportsResume := acceptRanges == "bytes"
 
-	fmt.Printf("Размер:  %s\n", size)
-	fmt.Printf("Докачка: %s\n", supportsResume)
+	fmt.Printf("Размер:  %d\n", size)
+	fmt.Printf("Докачка: %t\n", supportsResume)
 
 	resp, err = http.Get(url)
 	if err != nil {
@@ -45,6 +46,7 @@ func downloadFile(url, savePath string) error {
 		return fmt.Errorf("серер вернул %d", resp.StatusCode)
 	}
 
+	totalChunks := (size + chunkSize - 1) / chunkSize
 	fileName := filepath.Join(savePath, path.Base(url))
 	file, err := os.Create(fileName)
 	if err != nil {
@@ -52,11 +54,32 @@ func downloadFile(url, savePath string) error {
 	}
 	defer file.Close()
 
-	_, err = io.Copy(file, resp.Body)
+	err = file.Truncate(size)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Файл сохранён: %s\n", file)
+
+	for i := int64(0); i < totalChunks; i++ {
+		start := i * chunkSize
+		end := start + chunkSize - 1
+
+		if end >= size {
+			end = size - 1
+		}
+
+		fmt.Printf("Чанк %d/%d: байт %d-%d\n",
+			i+1,
+			totalChunks,
+			start,
+			end,
+		)
+	}
+
+	//_, err = io.Copy(file, resp.Body)
+	//if err != nil {
+	//	return err
+	//}
+	fmt.Printf("Файл сохранён: %s\n", fileName)
 	return nil
 }
 
