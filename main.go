@@ -16,10 +16,11 @@ import (
 const chunkSize = 10 * 1024 * 1024
 
 type DownloadState struct {
-	URL         string `json:"url"`
-	TotalSize   int64  `json:"total_size"`
-	ChunkSize   int    `json:"chunk_size"`
-	TotalChunks int    `json:"total_chunks"`
+	URL              string `json:"url"`
+	TotalSize        int64  `json:"total_size"`
+	ChunkSize        int    `json:"chunk_size"`
+	TotalChunks      int    `json:"total_chunks"`
+	DownloadedChunks []bool `json:"downloaded_chunks"`
 }
 
 func downloadFile(url, savePath string) error {
@@ -69,16 +70,13 @@ func downloadFile(url, savePath string) error {
 	}
 
 	state := DownloadState{
-		URL:         url,
-		TotalSize:   size,
-		ChunkSize:   chunkSize,
-		TotalChunks: int(totalChunks),
+		URL:              url,
+		TotalSize:        size,
+		ChunkSize:        chunkSize,
+		TotalChunks:      int(totalChunks),
+		DownloadedChunks: make([]bool, int(totalChunks)),
 	}
-	data, err := json.MarshalIndent(state, "", " ")
-	if err != nil {
-		return err
-	}
-	if err = os.WriteFile(fmt.Sprintf("%s.progress", fileName), data, 0644); err != nil {
+	if err = SaveState(fileName, state); err != nil {
 		return err
 	}
 
@@ -111,9 +109,25 @@ func downloadFile(url, savePath string) error {
 		if err != nil {
 			return err
 		}
+		state.DownloadedChunks[i] = true
+		if err = SaveState(fileName, state); err != nil {
+			return err
+		}
 	}
 
 	fmt.Printf("Файл сохранён: %s\n", fileName)
+	return nil
+}
+
+func SaveState(filename string, state DownloadState) error {
+	data, err := json.MarshalIndent(state, "", " ")
+	if err != nil {
+		return err
+	}
+	if err = os.WriteFile(fmt.Sprintf("%s.progress", filename), data, 0644); err != nil {
+		return err
+	}
+
 	return nil
 }
 
