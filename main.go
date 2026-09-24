@@ -67,12 +67,17 @@ func downloadFile(url, savePath string) error {
 			end = size - 1
 		}
 
-		fmt.Printf("Чанк %d/%d: байт %d-%d\n",
-			i+1,
-			totalChunks,
-			start,
-			end,
-		)
+		req, _ := http.NewRequest("GET", url, nil)
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode != http.StatusPartialContent {
+			return fmt.Errorf("сервер вернул: %d", resp.StatusCode)
+		}
+		defer resp.Body.Close()
 	}
 
 	//_, err = io.Copy(file, resp.Body)
