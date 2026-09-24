@@ -59,9 +59,6 @@ func downloadFile(ctx context.Context, url, savePath string, p *mpb.Progress) er
 		return err
 	}
 
-	acceptRanges := resp.Header.Get("Accept-Ranges")
-	supportsResume := acceptRanges == "bytes"
-
 	totalChunks := (size + chunkSize - 1) / chunkSize
 
 	var state *DownloadState
@@ -125,9 +122,6 @@ func downloadFile(ctx context.Context, url, savePath string, p *mpb.Progress) er
 	if downloadedBytes > 0 {
 		bar.SetCurrent(downloadedBytes)
 	}
-
-	fmt.Printf("Размер: %d\n", size)
-	fmt.Printf("Докачка: %t\n", supportsResume)
 
 	file, err := os.OpenFile(
 		fileName,
