@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/signal"
 	"path"
 	"path/filepath"
 	"strconv"
@@ -33,7 +35,7 @@ type DownloadState struct {
 	DownloadedChunks []bool `json:"downloaded_chunks"`
 }
 
-func downloadFile(url, savePath string, p *mpb.Progress) error {
+func downloadFile(ctx context.Context, url, savePath string, p *mpb.Progress) error {
 	if err := os.MkdirAll(savePath, 0755); err != nil {
 		return err
 	}
@@ -157,67 +159,77 @@ func downloadFile(url, savePath string, p *mpb.Progress) error {
 		go func() {
 			defer wg.Done()
 
-			for chunkID := range jobs {
-				start := chunkID * chunkSize
-				end := start + chunkSize - 1
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case chunkID, ok := <-jobs:
+					if !ok {
+						return
+					}
 
-				if end >= size {
-					end = size - 1
-				}
+					start := chunkID * chunkSize
+					end := start + chunkSize - 1
 
-				for attempt := 0; attempt < maxRetries; attempt++ {
-					err := downloadChunk(
-						url,
-						start,
-						end,
-						client,
-						file,
-						&fileMu,
-					)
+					if end >= size {
+						end = size - 1
+					}
 
-					if err == nil {
-						stateMu.Lock()
+					for attempt := 0; attempt < maxRetries; attempt++ {
+						err := downloadChunk(
+							url,
+							start,
+							end,
+							client,
+							file,
+							&fileMu,
+						)
 
-						state.DownloadedChunks[chunkID] = true
+						if err == nil {
+							stateMu.Lock()
 
-						err = SaveState(fileName, state)
+							state.DownloadedChunks[chunkID] = true
 
-						stateMu.Unlock()
+							err = SaveState(fileName, state)
 
-						if err != nil {
+							stateMu.Unlock()
+
+							if err != nil {
+								fmt.Printf(
+									"Ошибка сохранения состояния чанка %d: %v\n",
+									chunkID+1,
+									err,
+								)
+							}
+
+							// Обновляем progress bar.
+							bar.IncrBy(int(end - start + 1))
+
+							break
+						}
+
+						if attempt < maxRetries-1 {
 							fmt.Printf(
-								"Ошибка сохранения состояния чанка %d: %v\n",
+								"Ошибка чанка %d, повтор через %v...\n",
+								chunkID+1,
+								retryDelay,
+							)
+
+							time.Sleep(retryDelay)
+						} else {
+							fmt.Printf(
+								"Чанк %d не удалось загрузить: %v\n",
 								chunkID+1,
 								err,
 							)
 						}
-
-						// Обновляем progress bar.
-						bar.IncrBy(int(end - start + 1))
-
-						break
-					}
-
-					if attempt < maxRetries-1 {
-						fmt.Printf(
-							"Ошибка чанка %d, повтор через %v...\n",
-							chunkID+1,
-							retryDelay,
-						)
-
-						time.Sleep(retryDelay)
-					} else {
-						fmt.Printf(
-							"Чанк %d не удалось загрузить: %v\n",
-							chunkID+1,
-							err,
-						)
 					}
 				}
 			}
 		}()
 	}
 
+sendJobs:
 	for i := int64(0); i < totalChunks; i++ {
 		stateMu.Lock()
 		downloaded := state.DownloadedChunks[i]
@@ -227,12 +239,25 @@ func downloadFile(url, savePath string, p *mpb.Progress) error {
 			continue
 		}
 
-		jobs <- i
+		select {
+		case <-ctx.Done():
+			break sendJobs
+		case jobs <- i:
+		}
+
 	}
 
 	close(jobs)
 
 	wg.Wait()
+
+	stateMu.Lock()
+	err = SaveState(fileName, state)
+	stateMu.Unlock()
+
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -295,6 +320,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sigChan := make(chan os.Signal, 1)
+
+	signal.Notify(sigChan, os.Interrupt)
+	defer signal.Stop(sigChan)
+
+	go func() {
+		<-sigChan
+
+		fmt.Println("\nПолучен сигнал прерывания, завершаем...")
+		cancel()
+	}()
+
 	savePath := os.Args[1]
 	urls := os.Args[2:]
 
@@ -307,7 +346,7 @@ func main() {
 		wg.Add(1)
 		go func(u string) {
 			defer wg.Done()
-			if err := downloadFile(u, savePath, p); err != nil {
+			if err := downloadFile(ctx, u, savePath, p); err != nil {
 				fmt.Println(fmt.Errorf("error during download %s, %w", u, err))
 			}
 		}(u)
